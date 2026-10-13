@@ -1,8 +1,12 @@
 import os
+import socket
 import time
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
+import urllib3.util.connection as urllib3_connection
+
+urllib3_connection.allowed_gai_family = lambda: socket.AF_INET
 
 PUBLIC_HOST = "events-provider.dev-2.python-labs.ru"
 current_base = f"https://{PUBLIC_HOST}"
@@ -39,15 +43,29 @@ def kubernetes_event_services():
         return []
     with open(token_path, encoding="utf-8") as token_file:
         token = token_file.read().strip()
-    try:
-        response = requests.get(
-            "https://kubernetes.default.svc/api/v1/services",
-            headers={"Authorization": "Bearer " + token},
-            verify=ca_path if os.path.exists(ca_path) else True,
-            timeout=5,
-        )
-    except requests.RequestException as error:
-        return [(f"k8s-{type(error).__name__}", None)]
+    host = os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
+    port = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
+    verify = ca_path if os.path.exists(ca_path) else True
+    urls = [
+        f"https://{host}:{port}/api/v1/services",
+        "https://kubernetes.default.svc/api/v1/services",
+    ]
+    response = None
+    last_error = "k8s-no-response"
+    for url in urls:
+        try:
+            response = requests.get(
+                url,
+                headers={"Authorization": "Bearer " + token},
+                verify=verify,
+                timeout=2,
+            )
+            break
+        except requests.RequestException as error:
+            response = None
+            last_error = f"k8s-{type(error).__name__}"
+    if response is None:
+        return [(last_error, None)]
     if response.status_code != 200:
         return [(f"k8s-{response.status_code}", None)]
     found = []
@@ -81,6 +99,8 @@ def candidate_places():
 
     for base, host in kubernetes_event_services():
         add(base, host)
+
+    add(f"https://{PUBLIC_HOST}", None)
 
     for name, value in os.environ.items():
         upper = name.upper()
@@ -116,8 +136,6 @@ def candidate_places():
     ):
         add(ingress, PUBLIC_HOST)
 
-    add(f"http://{PUBLIC_HOST}", None)
-    add(f"https://{PUBLIC_HOST}", None)
     return places
 
 
@@ -132,7 +150,7 @@ def find_provider_base(api_key):
                 base + "/api/events/",
                 params={"changed_at": "2000-01-01"},
                 headers={"x-api-key": api_key, **({"Host": host} if host else {})},
-                timeout=(0.6, 5),
+                timeout=(3, 8) if ".svc" in base or PUBLIC_HOST in base else (0.8, 4),
                 allow_redirects=False,
             )
         except requests.RequestException as error:
