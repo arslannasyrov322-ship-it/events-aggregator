@@ -26,6 +26,8 @@ async def lifespan(app):
 
 app = FastAPI(lifespan=lifespan)
 sync_lock = threading.Lock()
+last_sync_error = None
+last_sync_count = 0
 
 @app.get("/api/health")
 def health():
@@ -119,7 +121,7 @@ def open_db():
 
 def sync_events():
     if not sync_lock.acquire(blocking=False):
-        return 0
+        return None
     try:
         return save_events()
     finally:
@@ -131,18 +133,31 @@ def save_events():
     client = EventsProviderClient(key)
     conn = open_db()
     cur = conn.cursor()
-    cur.execute("SELECT last_changed_at FROM sync_state WHERE id = 1")
-    row = cur.fetchone()
-    changed_at = "2000-01-01"
-    if row is not None and row[0]:
-        changed_at = row[0]
+    cur.execute("SELECT COUNT(*) FROM events")
+    if cur.fetchone()[0] == 0:
+        changed_at = "2000-01-01"
+    else:
+        cur.execute("SELECT last_changed_at FROM sync_state WHERE id = 1")
+        row = cur.fetchone()
+        changed_at = "2000-01-01"
+        if row is not None and row[0]:
+            changed_at = row[0]
     total = 0
     latest = changed_at
     for event in EventsPaginator(client, changed_at):
         place = event.get("place") or {}
         stamp = event.get("changed_at") or ""
         latest = max(latest, stamp)
-        cur.execute(
+        visitors = event.get("number_of_visitors")
+        if visitors is not None:
+            try:
+                visitors = int(visitors)
+            except (TypeError, ValueError):
+                visitors = None
+        if not event.get("id"):
+            continue
+        try:
+            cur.execute(
             """
             INSERT INTO events (
             id, name, city, status, event_time,
@@ -172,10 +187,13 @@ def save_events():
                 place.get("name"),
                 place.get("address"),
                 event.get("registration_deadline"),
-                event.get("number_of_visitors"),
+                visitors,
                 place.get("seats_pattern"),
             ),
-        )
+            )
+        except psycopg2.Error:
+            conn.rollback()
+            continue
         total = total + 1
         conn.commit()
 
@@ -196,10 +214,26 @@ def save_events():
     return total
 
 def run_sync():
+    global last_sync_error, last_sync_count
     try:
-        sync_events()
+        saved = sync_events()
     except (psycopg2.Error, requests.RequestException, KeyError, ValueError) as error:
+        last_sync_error = str(error)
         print("синхронизация не удалась", error)
+        return
+    if saved is None:
+        return
+    last_sync_count = saved
+    last_sync_error = None
+
+
+@app.get("/api/sync/status")
+def sync_status():
+    return {
+        "saved": last_sync_count,
+        "error": last_sync_error,
+        "has_key": bool(os.environ.get("EVENTS_API_KEY")),
+    }
 
 
 @app.post("/api/sync/trigger")
@@ -357,17 +391,20 @@ def event_seats(event_id: str):
     key = os.environ["EVENTS_API_KEY"]
     print("спрашиваю чужой сервис")
     response = requests.get(
-        f"http://events-provider.dev-2.python-labs.ru/api/events/{event_id}/seats",
+        f"https://events-provider.dev-2.python-labs.ru/api/events/{event_id}/seats/",
         headers={"x-api-key": key},
-
+        timeout=8,
     )
-    if response.status_code !=200:
+    if response.status_code != 200:
         raise HTTPException(status_code=502, detail="места сейчас недоступны")
 
     data = response.json()
+    seats = data.get("seats", [])
+    if not isinstance(seats, list):
+        seats = []
     result = {
         "event_id": event_id,
-        "available_seats": data["seats"],
+        "available_seats": seats,
     }
     seat_cache[event_id] = {"time": now, "data": result}
     return result

@@ -12,6 +12,7 @@ class EventsProviderClient:
             url,
             params=params,
             headers={"x-api-key": self.api_key},
+            timeout=4,
         )
         return response
     def register(self, event_id, first_name, last_name, email, seat):
@@ -19,6 +20,7 @@ class EventsProviderClient:
         response = requests.post(
             url,
             headers={"x-api-key": self.api_key},
+            timeout=8,
             json={
                 "first_name": first_name,
                 "last_name": last_name,
@@ -32,7 +34,8 @@ class EventsProviderClient:
         response = requests.delete(
             url,
             headers={"x-api-key": self.api_key},
-            json={"ticket_Id": ticket_id}
+            timeout=8,
+            json={"ticket_id": ticket_id},
         )
         return response    
 
@@ -49,13 +52,25 @@ class EventsPaginator:
         params = self.params
         while url is not None:
             response = None
-            for attempt in range(3):
-                response = self.client.get_page(url, params)
-                if response.status_code == 200 and response.text.strip():
+            failure = "нет ответа"
+            for attempt in range(2):
+                try:
+                    response = self.client.get_page(url, params)
+                except requests.RequestException as error:
+                    response = None
+                    failure = str(error)
+                if (
+                    response is not None
+                    and response.status_code == 200
+                    and response.text.strip()
+                ):
                     break
-                time.sleep(2)
-            if response is None or response.status_code !=200 or not response.text.strip():
-                break
+                if response is not None:
+                    failure = f"{response.status_code} {response.text[:80]}"
+                if attempt == 0:
+                    time.sleep(1)
+            if response is None or response.status_code != 200 or not response.text.strip():
+                raise ValueError(f"чужой сервис {failure}")
             data = response.json()
             yield from data["results"]
             url = data["next"]
