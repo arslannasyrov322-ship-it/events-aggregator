@@ -34,37 +34,93 @@ import psycopg2
 
 
 def get_connection():
+    host = os.environ.get("POSTGRES_HOST")
     url = os.environ.get("POSTGRES_CONNECTION_STRING")
+    if host:
+        try:
+            return psycopg2.connect(
+                host=host,
+                port=os.environ.get("POSTGRES_PORT", "5432"),
+                dbname=os.environ.get("POSTGRES_DATABASE_NAME", "events"),
+                user=os.environ.get("POSTGRES_USERNAME", "postgres"),
+                password=os.environ.get("POSTGRES_PASSWORD", "postgres"),
+            )
+        except psycopg2.Error:
+            if not url:
+                raise
     if url:
         return psycopg2.connect(url)
     return psycopg2.connect(
-        host=os.environ.get("POSTGRES_HOST", "localhost"),
-        port=os.environ.get("POSTGRES_PORT", "5432"),
-        dbname=os.environ.get("POSTGRES_DATABASE_NAME", "events"),
-        user=os.environ.get("POSTGRES_USERNAME", "postgres"),
-        password=os.environ.get("POSTGRES_PASSWORD", "postgres"),
+        host="localhost",
+        port="5432",
+        dbname="events",
+        user="postgres",
+        password="postgres",
     )
+
+
+def ensure_schema(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS events (
+            id text PRIMARY KEY,
+            name text,
+            city text,
+            status text,
+            event_time text,
+            place_id text,
+            place_name text,
+            address text,
+            registration_deadline text,
+            number_of_visitors integer,
+            seats_pattern text
+        )
+        """
+    )
+    cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS event_time text")
+    cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS place_id text")
+    cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS place_name text")
+    cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS address text")
+    cur.execute(
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS registration_deadline text"
+    )
+    cur.execute(
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS number_of_visitors integer"
+    )
+    cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS seats_pattern text")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sync_state (
+            id integer PRIMARY KEY,
+            last_changed_at text
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tickets (
+            ticket_id text PRIMARY KEY,
+            event_id text
+        )
+        """
+    )
+    cur.execute("CREATE TABLE IF NOT EXISTS notes (message text)")
+
+
+def open_db():
+    conn = get_connection()
+    cur = conn.cursor()
+    ensure_schema(cur)
+    conn.commit()
+    cur.close()
+    return conn
 
 
 def sync_events():
     key = os.environ["EVENTS_API_KEY"]
     client = EventsProviderClient(key)
-    conn = get_connection()
+    conn = open_db()
     cur = conn.cursor()
-    cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS event_time text")
-    cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS place_id text")
-    cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS place_name text ")
-    cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS address text")
-    cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS registration_deadline text")
-    cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS number_of_visitors integer")
-    cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS seats_pattern text")
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS sync_state (
-            id integer PRIMARY KEY,
-            last_changed_at text
-        )
-    """)
     cur.execute("SELECT last_changed_at FROM sync_state WHERE id = 1")
     row = cur.fetchone()
     changed_at = "2000-01-01"
@@ -130,13 +186,16 @@ def sync_events():
 
 @app.post("/api/sync/trigger")
 def sync_trigger():
-    total = sync_events()
+    try:
+        total = sync_events()
+    except (psycopg2.Error, requests.RequestException, KeyError, ValueError) as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
     return {"status": "ok", "count": total}
 
 
 @app.get("/api/notes")
 def notes():
-    conn = get_connection()
+    conn = open_db()
     cur = conn.cursor()
     cur.execute("SELECT message FROM notes")
     rows = cur.fetchall()
@@ -154,7 +213,7 @@ def add_note(note: dict):
     if message is None:
         return {"error": "нет текста"}
 
-    conn = get_connection()
+    conn = open_db()
     cur = conn.cursor()
     cur.execute("INSERT INTO notes (message) VALUES (%s)", (message,))
     conn.commit()
@@ -163,7 +222,7 @@ def add_note(note: dict):
     return {"message": message}
 @app.get("/api/events")
 def events(page: int = 1, page_size: int = 20, date_from: str | None = None):
-    conn = get_connection()
+    conn = open_db()
     cur = conn.cursor()
 
     if date_from:
@@ -239,7 +298,7 @@ def events(page: int = 1, page_size: int = 20, date_from: str | None = None):
     }
 @app.get("/api/events/{event_id}")
 def one_event(event_id: str):
-    conn = get_connection()
+    conn = open_db()
     cur = conn.cursor()
     cur.execute(
         """
@@ -305,7 +364,7 @@ def create_tickets(ticket: dict):
     if "@" not in ticket["email"]:
         raise HTTPException(status_code=400, detail="почта указана некорректно")
 
-    conn = get_connection()
+    conn = open_db()
     cur = conn.cursor()
     cur.execute("SELECT status FROM events WHERE id=%s", (ticket["event_id"],))
     row = cur.fetchone()
@@ -351,7 +410,7 @@ def create_tickets(ticket: dict):
 
 @app.delete("/api/tickets/{ticket_id}")
 def delete_ticket(ticket_id: str):
-    conn = get_connection()
+    conn = open_db()
     cur = conn.cursor()
     cur.execute("SELECT event_id FROM tickets WHERE ticket_id = %s", (ticket_id,))
     row = cur.fetchone()
