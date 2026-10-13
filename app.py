@@ -243,6 +243,7 @@ def sync_status():
         "saved": last_sync_count,
         "error": last_sync_error,
         "has_key": bool(os.environ.get("EVENTS_API_KEY")),
+        "has_events_url": bool(os.environ.get("EVENTS_API_URL")),
         "place": provider_place(),
     }
 

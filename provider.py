@@ -97,10 +97,10 @@ def candidate_places():
             seen.add(item)
             places.append(item)
 
-    for base, host in kubernetes_event_services():
-        add(base, host)
-
-    add(f"https://{PUBLIC_HOST}", None)
+    for name in ("EVENTS_API_URL", "EVENTS_PROVIDER_URL", "PROVIDER_URL"):
+        value = os.environ.get(name, "").strip()
+        if value.startswith(("http://", "https://")):
+            add(value, None)
 
     for name, value in os.environ.items():
         upper = name.upper()
@@ -110,6 +110,8 @@ def candidate_places():
             continue
         if "EVENT" in upper or "PROVIDER" in upper:
             add(value, None)
+
+    add(f"https://{PUBLIC_HOST}", None)
 
     for base in (
         "http://events-provider.events-provider.svc",
