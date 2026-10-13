@@ -25,6 +25,7 @@ async def lifespan(app):
     yield
 
 app = FastAPI(lifespan=lifespan)
+sync_lock = threading.Lock()
 
 @app.get("/api/health")
 def health():
@@ -117,6 +118,15 @@ def open_db():
 
 
 def sync_events():
+    if not sync_lock.acquire(blocking=False):
+        return 0
+    try:
+        return save_events()
+    finally:
+        sync_lock.release()
+
+
+def save_events():
     key = os.environ["EVENTS_API_KEY"]
     client = EventsProviderClient(key)
     conn = open_db()
@@ -167,7 +177,8 @@ def sync_events():
             ),
         )
         total = total + 1
-            
+        conn.commit()
+
     day = latest[:10]
     cur.execute(
         """
@@ -184,13 +195,18 @@ def sync_events():
     conn.close()
     return total
 
+def run_sync():
+    try:
+        sync_events()
+    except (psycopg2.Error, requests.RequestException, KeyError, ValueError) as error:
+        print("синхронизация не удалась", error)
+
+
 @app.post("/api/sync/trigger")
 def sync_trigger():
-    try:
-        total = sync_events()
-    except (psycopg2.Error, requests.RequestException, KeyError, ValueError) as error:
-        raise HTTPException(status_code=500, detail=str(error)) from error
-    return {"status": "ok", "count": total}
+    worker = threading.Thread(target=run_sync, daemon=True)
+    worker.start()
+    return {"status": "ok"}
 
 
 @app.get("/api/notes")
