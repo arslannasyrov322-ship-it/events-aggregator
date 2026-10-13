@@ -1,4 +1,5 @@
 import os
+import socket
 import time
 from urllib.parse import urlsplit, urlunsplit
 
@@ -8,8 +9,20 @@ session = requests.Session()
 session.trust_env = False
 
 PUBLIC_HOST = "events-provider.dev-2.python-labs.ru"
+CATALOG_IP = "147.45.108.148"
 current_base = f"https://{PUBLIC_HOST}"
 current_host = None
+
+_orig_getaddrinfo = socket.getaddrinfo
+
+
+def _getaddrinfo(host, port, *args, **kwargs):
+    if host == PUBLIC_HOST:
+        host = CATALOG_IP
+    return _orig_getaddrinfo(host, port, *args, **kwargs)
+
+
+socket.getaddrinfo = _getaddrinfo
 
 
 def provider_place():
