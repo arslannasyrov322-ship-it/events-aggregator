@@ -1,12 +1,11 @@
 import os
-import socket
 import time
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
-import urllib3.util.connection as urllib3_connection
 
-urllib3_connection.allowed_gai_family = lambda: socket.AF_INET
+session = requests.Session()
+session.trust_env = False
 
 PUBLIC_HOST = "events-provider.dev-2.python-labs.ru"
 current_base = f"https://{PUBLIC_HOST}"
@@ -141,29 +140,29 @@ def candidate_places():
     return places
 
 
+def catalog_base():
+    for name in ("EVENTS_API_URL", "EVENTS_PROVIDER_URL", "PROVIDER_URL"):
+        value = os.environ.get(name, "").strip().rstrip("/")
+        if value.startswith(("http://", "https://")):
+            return value
+    return f"https://{PUBLIC_HOST}"
+
+
 def find_provider_base(api_key):
-    failures = []
-    for base, host in candidate_places():
-        if not base.startswith("http"):
-            failures.append(base)
-            continue
-        try:
-            response = requests.get(
-                base + "/api/events/",
-                params={"changed_at": "2000-01-01"},
-                headers={"x-api-key": api_key, **({"Host": host} if host else {})},
-                timeout=(3, 8) if ".svc" in base or PUBLIC_HOST in base else (0.8, 4),
-                allow_redirects=False,
-            )
-        except requests.RequestException as error:
-            failures.append(f"{base} {type(error).__name__}")
-            continue
-        if response.status_code == 200 and response.text.strip():
-            remember_provider(base, host)
-            return response
-        failures.append(f"{base} {response.status_code}")
-    shown = failures[:3] + failures[-3:]
-    raise ValueError("чужой сервис " + "; ".join(shown))
+    base = catalog_base()
+    try:
+        response = session.get(
+            base + "/api/events/",
+            params={"changed_at": "2000-01-01"},
+            headers={"x-api-key": api_key},
+            timeout=(8, 20),
+        )
+    except requests.RequestException as error:
+        raise ValueError(f"чужой сервис {base} {type(error).__name__}") from error
+    if response.status_code != 200 or not response.text.strip():
+        raise ValueError(f"чужой сервис {base} {response.status_code}")
+    remember_provider(base, None)
+    return response
 
 
 def rewrite_next(next_url, base):
@@ -183,17 +182,17 @@ class EventsProviderClient:
         self.api_key = api_key
 
     def get_page(self, url, params=None):
-        response = requests.get(
+        response = session.get(
             url,
             params=params,
             headers=provider_headers(self.api_key),
-            timeout=(2, 8),
+            timeout=(8, 20),
         )
         return response
 
     def register(self, event_id, first_name, last_name, email, seat):
         url = provider_url(f"/api/events/{event_id}/register/")
-        response = requests.post(
+        response = session.post(
             url,
             headers=provider_headers(self.api_key),
             timeout=8,
@@ -208,7 +207,7 @@ class EventsProviderClient:
 
     def unregister(self, event_id, ticket_id):
         url = provider_url(f"/api/events/{event_id}/unregister/")
-        response = requests.delete(
+        response = session.delete(
             url,
             headers=provider_headers(self.api_key),
             timeout=8,

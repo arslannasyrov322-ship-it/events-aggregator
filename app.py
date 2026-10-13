@@ -13,6 +13,7 @@ from provider import (
     provider_headers,
     provider_place,
     provider_url,
+    session,
 )
 
 
@@ -402,7 +403,7 @@ def event_seats(event_id: str):
 
     key = os.environ["EVENTS_API_KEY"]
     print("спрашиваю чужой сервис")
-    response = requests.get(
+    response = session.get(
         provider_url(f"/api/events/{event_id}/seats/"),
         headers=provider_headers(key),
         timeout=(2, 8),

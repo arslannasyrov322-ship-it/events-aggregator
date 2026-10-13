@@ -9,7 +9,7 @@ def test_register_returns_ticket():
     fake.status_code = 200
     fake.json.return_value = {"ticket_id": "abc"}
 
-    with patch("provider.requests.post", return_value=fake):
+    with patch("provider.session.post", return_value=fake):
         response = client.register("event-1", "Арслан", "Насыров", "a@b.c", "A1")
 
     assert response.status_code == 200
@@ -38,7 +38,7 @@ def test_unregister_calls_provider():
     fake.status_code = 200
     fake.json.return_value = {"success": True}
 
-    with patch("provider.requests.delete", return_value=fake):
+    with patch("provider.session.delete", return_value=fake):
         response = client.unregister("event-1", "ticket-1")
 
     assert response.status_code == 200
