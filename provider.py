@@ -155,7 +155,7 @@ def find_provider_base(api_key):
             base + "/api/events/",
             params={"changed_at": "2000-01-01"},
             headers={"x-api-key": api_key},
-            timeout=(8, 20),
+            timeout=60,
         )
     except requests.RequestException as error:
         raise ValueError(f"чужой сервис {base} {type(error).__name__}") from error
@@ -186,7 +186,7 @@ class EventsProviderClient:
             url,
             params=params,
             headers=provider_headers(self.api_key),
-            timeout=(8, 20),
+            timeout=60,
         )
         return response
 
@@ -195,7 +195,7 @@ class EventsProviderClient:
         response = session.post(
             url,
             headers=provider_headers(self.api_key),
-            timeout=8,
+            timeout=60,
             json={
                 "first_name": first_name,
                 "last_name": last_name,
@@ -210,7 +210,7 @@ class EventsProviderClient:
         response = session.delete(
             url,
             headers=provider_headers(self.api_key),
-            timeout=8,
+            timeout=60,
             json={"ticket_id": ticket_id},
         )
         return response

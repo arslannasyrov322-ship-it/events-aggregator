@@ -406,7 +406,7 @@ def event_seats(event_id: str):
     response = session.get(
         provider_url(f"/api/events/{event_id}/seats/"),
         headers=provider_headers(key),
-        timeout=(2, 8),
+        timeout=60,
     )
     if response.status_code != 200:
         raise HTTPException(status_code=502, detail="места сейчас недоступны")
