@@ -32,6 +32,43 @@ def remember_provider(base, host):
     current_host = host
 
 
+def kubernetes_event_services():
+    token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    if not os.path.exists(token_path):
+        return []
+    with open(token_path, encoding="utf-8") as token_file:
+        token = token_file.read().strip()
+    try:
+        response = requests.get(
+            "https://kubernetes.default.svc/api/v1/services",
+            headers={"Authorization": "Bearer " + token},
+            verify=ca_path if os.path.exists(ca_path) else True,
+            timeout=5,
+        )
+    except requests.RequestException as error:
+        return [(f"k8s-{type(error).__name__}", None)]
+    if response.status_code != 200:
+        return [(f"k8s-{response.status_code}", None)]
+    found = []
+    for item in response.json().get("items", []):
+        meta = item.get("metadata") or {}
+        name = meta.get("name") or ""
+        namespace = meta.get("namespace") or ""
+        label = (name + " " + namespace).lower()
+        if "event" not in label and "provider" not in label:
+            continue
+        for port in (item.get("spec") or {}).get("ports") or []:
+            number = port.get("port")
+            if not number:
+                continue
+            scheme = "https" if number == 443 else "http"
+            found.append((f"{scheme}://{name}.{namespace}.svc:{number}", None))
+    if not found:
+        return [("k8s-no-event-service", None)]
+    return found
+
+
 def candidate_places():
     places = []
     seen = set()
@@ -41,6 +78,9 @@ def candidate_places():
         if item not in seen:
             seen.add(item)
             places.append(item)
+
+    for base, host in kubernetes_event_services():
+        add(base, host)
 
     for name, value in os.environ.items():
         upper = name.upper()
@@ -84,21 +124,26 @@ def candidate_places():
 def find_provider_base(api_key):
     failures = []
     for base, host in candidate_places():
+        if not base.startswith("http"):
+            failures.append(base)
+            continue
         try:
             response = requests.get(
                 base + "/api/events/",
                 params={"changed_at": "2000-01-01"},
                 headers={"x-api-key": api_key, **({"Host": host} if host else {})},
-                timeout=(1, 5),
+                timeout=(0.6, 5),
+                allow_redirects=False,
             )
-        except requests.RequestException:
-            failures.append(base + " timeout")
+        except requests.RequestException as error:
+            failures.append(f"{base} {type(error).__name__}")
             continue
         if response.status_code == 200 and response.text.strip():
             remember_provider(base, host)
             return response
         failures.append(f"{base} {response.status_code}")
-    raise ValueError("чужой сервис " + "; ".join(failures[:6]))
+    shown = failures[:3] + failures[-3:]
+    raise ValueError("чужой сервис " + "; ".join(shown))
 
 
 def rewrite_next(next_url, base):
