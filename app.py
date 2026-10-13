@@ -14,7 +14,7 @@ def daily_sync():
         print("плановая синхронизация")
         try:
             sync_events()
-        except (requests.RequestException, psycopg2.Error, ValueError) as error:
+        except (requests.RequestException, psycopg2.Error, ValueError, KeyError) as error:
             print("синхронизация не удалась", error)
         time.sleep(24 * 60 * 60)
 
@@ -33,10 +33,23 @@ def health():
 import psycopg2
 
 
+def get_connection():
+    url = os.environ.get("POSTGRES_CONNECTION_STRING")
+    if url:
+        return psycopg2.connect(url)
+    return psycopg2.connect(
+        host=os.environ.get("POSTGRES_HOST", "localhost"),
+        port=os.environ.get("POSTGRES_PORT", "5432"),
+        dbname=os.environ.get("POSTGRES_DATABASE_NAME", "events"),
+        user=os.environ.get("POSTGRES_USERNAME", "postgres"),
+        password=os.environ.get("POSTGRES_PASSWORD", "postgres"),
+    )
+
+
 def sync_events():
     key = os.environ["EVENTS_API_KEY"]
     client = EventsProviderClient(key)
-    conn = psycopg2.connect("host=localhost port=5432 dbname=events user=postgres password=postgres")
+    conn = get_connection()
     cur = conn.cursor()
     cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS event_time text")
     cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS place_id text")
@@ -123,7 +136,7 @@ def sync_trigger():
 
 @app.get("/api/notes")
 def notes():
-    conn = psycopg2.connect("host=localhost port=5432 dbname=events user=postgres password=postgres")
+    conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT message FROM notes")
     rows = cur.fetchall()
@@ -141,7 +154,7 @@ def add_note(note: dict):
     if message is None:
         return {"error": "нет текста"}
 
-    conn = psycopg2.connect("host=localhost port=5432 dbname=events user=postgres password=postgres")
+    conn = get_connection()
     cur = conn.cursor()
     cur.execute("INSERT INTO notes (message) VALUES (%s)", (message,))
     conn.commit()
@@ -150,7 +163,7 @@ def add_note(note: dict):
     return {"message": message}
 @app.get("/api/events")
 def events(page: int = 1, page_size: int = 20, date_from: str | None = None):
-    conn = psycopg2.connect("host=localhost port=5432 dbname=events user=postgres password=postgres")
+    conn = get_connection()
     cur = conn.cursor()
 
     if date_from:
@@ -226,7 +239,7 @@ def events(page: int = 1, page_size: int = 20, date_from: str | None = None):
     }
 @app.get("/api/events/{event_id}")
 def one_event(event_id: str):
-    conn = psycopg2.connect("host=localhost port=5432 dbname=events user=postgres password=postgres")
+    conn = get_connection()
     cur = conn.cursor()
     cur.execute(
         """
@@ -292,7 +305,7 @@ def create_tickets(ticket: dict):
     if "@" not in ticket["email"]:
         raise HTTPException(status_code=400, detail="почта указана некорректно")
 
-    conn = psycopg2.connect("host=localhost port=5432 dbname=events user=postgres password=postgres")
+    conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT status FROM events WHERE id=%s", (ticket["event_id"],))
     row = cur.fetchone()
@@ -338,7 +351,7 @@ def create_tickets(ticket: dict):
 
 @app.delete("/api/tickets/{ticket_id}")
 def delete_ticket(ticket_id: str):
-    conn = psycopg2.connect("host=localhost port=5432 dbname=events user=postgres password=postgres")
+    conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT event_id FROM tickets WHERE ticket_id = %s", (ticket_id,))
     row = cur.fetchone()
