@@ -6,7 +6,14 @@ from contextlib import asynccontextmanager
 import requests
 from fastapi import FastAPI, HTTPException
 
-from provider import EventsPaginator, EventsProviderClient
+from provider import (
+    EventsPaginator,
+    EventsProviderClient,
+    find_provider_base,
+    provider_headers,
+    provider_place,
+    provider_url,
+)
 
 
 def daily_sync():
@@ -130,6 +137,7 @@ def sync_events():
 
 def save_events():
     key = os.environ["EVENTS_API_KEY"]
+    first_page = find_provider_base(key)
     client = EventsProviderClient(key)
     conn = open_db()
     cur = conn.cursor()
@@ -144,7 +152,9 @@ def save_events():
             changed_at = row[0]
     total = 0
     latest = changed_at
-    for event in EventsPaginator(client, changed_at):
+    if changed_at != "2000-01-01":
+        first_page = None
+    for event in EventsPaginator(client, changed_at, first_response=first_page):
         place = event.get("place") or {}
         stamp = event.get("changed_at") or ""
         latest = max(latest, stamp)
@@ -233,6 +243,7 @@ def sync_status():
         "saved": last_sync_count,
         "error": last_sync_error,
         "has_key": bool(os.environ.get("EVENTS_API_KEY")),
+        "place": provider_place(),
     }
 
 
@@ -391,9 +402,9 @@ def event_seats(event_id: str):
     key = os.environ["EVENTS_API_KEY"]
     print("спрашиваю чужой сервис")
     response = requests.get(
-        f"https://events-provider.dev-2.python-labs.ru/api/events/{event_id}/seats/",
-        headers={"x-api-key": key},
-        timeout=8,
+        provider_url(f"/api/events/{event_id}/seats/"),
+        headers=provider_headers(key),
+        timeout=(2, 8),
     )
     if response.status_code != 200:
         raise HTTPException(status_code=502, detail="места сейчас недоступны")
