@@ -1,5 +1,4 @@
 import os
-import socket
 import time
 from urllib.parse import urlsplit, urlunsplit
 
@@ -9,20 +8,12 @@ session = requests.Session()
 session.trust_env = False
 
 PUBLIC_HOST = "events-provider.dev-2.python-labs.ru"
-CATALOG_IP = "147.45.108.148"
-current_base = f"https://{PUBLIC_HOST}"
+INTERNAL_BASE = (
+    "http://student-system-events-provider-web"
+    ".student-system-events-provider.svc:8000"
+)
+current_base = INTERNAL_BASE
 current_host = None
-
-_orig_getaddrinfo = socket.getaddrinfo
-
-
-def _getaddrinfo(host, port, *args, **kwargs):
-    if host == PUBLIC_HOST:
-        host = CATALOG_IP
-    return _orig_getaddrinfo(host, port, *args, **kwargs)
-
-
-socket.getaddrinfo = _getaddrinfo
 
 
 def provider_place():
@@ -153,29 +144,39 @@ def candidate_places():
     return places
 
 
-def catalog_base():
+def catalog_bases():
+    bases = [INTERNAL_BASE]
     for name in ("EVENTS_API_URL", "EVENTS_PROVIDER_URL", "PROVIDER_URL"):
         value = os.environ.get(name, "").strip().rstrip("/")
-        if value.startswith(("http://", "https://")):
-            return value
-    return f"https://{PUBLIC_HOST}"
+        if value.startswith("http://") and ".svc" in value:
+            bases.insert(0, value)
+    seen = set()
+    unique = []
+    for base in bases:
+        if base not in seen:
+            seen.add(base)
+            unique.append(base)
+    return unique
 
 
 def find_provider_base(api_key):
-    base = catalog_base()
-    try:
-        response = session.get(
-            base + "/api/events/",
-            params={"changed_at": "2000-01-01"},
-            headers={"x-api-key": api_key},
-            timeout=60,
-        )
-    except requests.RequestException as error:
-        raise ValueError(f"чужой сервис {base} {type(error).__name__}") from error
-    if response.status_code != 200 or not response.text.strip():
-        raise ValueError(f"чужой сервис {base} {response.status_code}")
-    remember_provider(base, None)
-    return response
+    failures = []
+    for base in catalog_bases():
+        try:
+            response = session.get(
+                base + "/api/events/",
+                params={"changed_at": "2000-01-01"},
+                headers={"x-api-key": api_key},
+                timeout=(3, 15),
+            )
+        except requests.RequestException as error:
+            failures.append(f"{base} {type(error).__name__}: {error}")
+            continue
+        if response.status_code == 200 and response.text.strip():
+            remember_provider(base, None)
+            return response
+        failures.append(f"{base} {response.status_code} {response.text[:80]}")
+    raise ValueError("чужой сервис " + "; ".join(failures))
 
 
 def rewrite_next(next_url, base):
