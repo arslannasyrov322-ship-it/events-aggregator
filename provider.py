@@ -1,5 +1,5 @@
 import time
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
 
@@ -39,11 +39,11 @@ class EventsProviderClient:
         )
 
     def seats(self, event_id: str):
-        url = f"{self.base_url}/api/events/{event_id}/seats/"
+        url = urljoin(self.base_url + "/", f"api/events/{event_id}/seats/")
         return session.get(url, headers=self._headers(), timeout=60)
 
     def register(self, event_id, first_name, last_name, email, seat):
-        url = f"{self.base_url}/api/events/{event_id}/register/"
+        url = urljoin(self.base_url + "/", f"api/events/{event_id}/register/")
         return session.post(
             url,
             headers=self._headers(),
@@ -57,7 +57,7 @@ class EventsProviderClient:
         )
 
     def unregister(self, event_id, ticket_id):
-        url = f"{self.base_url}/api/events/{event_id}/unregister/"
+        url = urljoin(self.base_url + "/", f"api/events/{event_id}/unregister/")
         return session.delete(
             url,
             headers=self._headers(),
@@ -76,7 +76,7 @@ class EventsPaginator:
         if configured is None:
             configured = get_settings().provider_base_url
         self.base = configured.rstrip("/")
-        self.url = self.base + "/api/events/"
+        self.url = urljoin(self.base + "/", "api/events/")
         self.params = {"changed_at": changed_at}
 
     def _load(self, url, params):
