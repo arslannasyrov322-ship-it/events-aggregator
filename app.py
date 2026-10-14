@@ -49,7 +49,9 @@ app = FastAPI(lifespan=lifespan)
 
 
 def _page_url(request: Request, page: int, page_size: int, date_from: str | None):
-    url = request.url.remove_query_params("page", "page_size", "date_from")
+    url = request.url
+    for name in ("page", "page_size", "date_from"):
+        url = url.remove_query_params(name)
     url = url.include_query_params(page=page, page_size=page_size)
     if date_from:
         url = url.include_query_params(date_from=date_from)
