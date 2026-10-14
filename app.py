@@ -401,6 +401,15 @@ def event_seats(event_id: str):
     if saved is not None and now - saved["time"] < 30:
         return saved["data"]
 
+    conn = open_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM events WHERE id = %s", (event_id,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if row is None:
+        raise HTTPException(status_code=404, detail="событие не найдено")
+
     key = os.environ["EVENTS_API_KEY"]
     print("спрашиваю чужой сервис")
     response = session.get(
@@ -408,6 +417,8 @@ def event_seats(event_id: str):
         headers=provider_headers(key),
         timeout=60,
     )
+    if response.status_code == 404:
+        raise HTTPException(status_code=404, detail="событие не найдено")
     if response.status_code != 200:
         raise HTTPException(status_code=502, detail="места сейчас недоступны")
 
