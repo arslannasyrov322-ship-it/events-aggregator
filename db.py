@@ -1,35 +1,55 @@
-import psycopg2
+from urllib.parse import quote
+
+import asyncpg
 
 from config import get_settings
 
+_pool: asyncpg.Pool | None = None
 
-def connect():
+
+def database_dsn() -> str:
     settings = get_settings()
     if settings.postgres_host and settings.postgres_host != "localhost":
-        try:
-            return psycopg2.connect(
-                host=settings.postgres_host,
-                port=settings.postgres_port,
-                dbname=settings.postgres_database_name,
-                user=settings.postgres_username,
-                password=settings.postgres_password,
-            )
-        except psycopg2.Error:
-            if not settings.postgres_connection_string:
-                raise
-    if settings.postgres_connection_string:
-        return psycopg2.connect(settings.postgres_connection_string)
-    return psycopg2.connect(
-        host="localhost",
-        port="5432",
-        dbname="events",
-        user="postgres",
-        password="postgres",
+        user = quote(settings.postgres_username, safe="")
+        password = quote(settings.postgres_password, safe="")
+        database = quote(settings.postgres_database_name, safe="")
+        return (
+            f"postgresql://{user}:{password}@{settings.postgres_host}:"
+            f"{settings.postgres_port}/{database}"
+        )
+    raw = settings.postgres_connection_string.strip()
+    if raw.startswith("postgres://"):
+        raw = "postgresql://" + raw[len("postgres://") :]
+    if raw:
+        return raw
+    return "postgresql://postgres:postgres@localhost:5432/events"
+
+
+async def init_pool() -> None:
+    global _pool
+    _pool = await asyncpg.create_pool(
+        database_dsn(),
+        min_size=1,
+        max_size=10,
+        statement_cache_size=0,
     )
 
 
-def ensure_schema(cur) -> None:
-    cur.execute(
+async def close_pool() -> None:
+    global _pool
+    if _pool is not None:
+        await _pool.close()
+        _pool = None
+
+
+def get_pool() -> asyncpg.Pool:
+    if _pool is None:
+        raise RuntimeError("пул базы ещё не создан")
+    return _pool
+
+
+async def ensure_schema() -> None:
+    statements = (
         """
         CREATE TABLE IF NOT EXISTS events (
             id text PRIMARY KEY,
@@ -44,41 +64,27 @@ def ensure_schema(cur) -> None:
             number_of_visitors integer,
             seats_pattern text
         )
-        """
-    )
-    cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS event_time text")
-    cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS place_id text")
-    cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS place_name text")
-    cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS address text")
-    cur.execute(
-        "ALTER TABLE events ADD COLUMN IF NOT EXISTS registration_deadline text"
-    )
-    cur.execute(
-        "ALTER TABLE events ADD COLUMN IF NOT EXISTS number_of_visitors integer"
-    )
-    cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS seats_pattern text")
-    cur.execute(
+        """,
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS event_time text",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS place_id text",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS place_name text",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS address text",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS registration_deadline text",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS number_of_visitors integer",
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS seats_pattern text",
         """
         CREATE TABLE IF NOT EXISTS sync_state (
             id integer PRIMARY KEY,
             last_changed_at text
         )
-        """
-    )
-    cur.execute(
+        """,
         """
         CREATE TABLE IF NOT EXISTS tickets (
             ticket_id text PRIMARY KEY,
             event_id text
         )
-        """
+        """,
     )
-
-
-def open_db():
-    conn = connect()
-    cur = conn.cursor()
-    ensure_schema(cur)
-    conn.commit()
-    cur.close()
-    return conn
+    async with get_pool().acquire() as conn:
+        for statement in statements:
+            await conn.execute(statement)

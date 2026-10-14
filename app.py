@@ -1,16 +1,17 @@
+import asyncio
 import logging
-import threading
-import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 
+from db import close_pool, ensure_schema, init_pool
 from domain import (
     EventNotFound,
     ProviderRejected,
     RegistrationClosed,
     TicketNotFound,
 )
+from provider import close_http, init_http
 from repositories import EventRepository, TicketRepository
 from services import (
     EventQueryService,
@@ -31,18 +32,23 @@ seat_service = SeatService(events)
 ticket_service = TicketService(events, tickets)
 
 
-def daily_sync():
+async def daily_sync():
     while True:
         logger.info("плановая синхронизация")
-        run_sync_safely(sync_service)
-        time.sleep(24 * 60 * 60)
+        await run_sync_safely(sync_service)
+        await asyncio.sleep(24 * 60 * 60)
 
 
 @asynccontextmanager
 async def lifespan(app):
-    worker = threading.Thread(target=daily_sync, daemon=True)
-    worker.start()
+    await init_pool()
+    await ensure_schema()
+    await init_http()
+    worker = asyncio.create_task(daily_sync())
     yield
+    worker.cancel()
+    await close_http()
+    await close_pool()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -59,25 +65,24 @@ def _page_url(request: Request, page: int, page_size: int, date_from: str | None
 
 
 @app.get("/api/health")
-def health():
+async def health():
     return {"status": "ok"}
 
 
 @app.post("/api/sync/trigger")
-def sync_trigger():
-    worker = threading.Thread(target=run_sync_safely, args=(sync_service,), daemon=True)
-    worker.start()
+async def sync_trigger():
+    asyncio.create_task(run_sync_safely(sync_service))
     return {"status": "ok"}
 
 
 @app.get("/api/events")
-def list_events(
+async def list_events(
     request: Request,
     page: int = 1,
     page_size: int = 20,
     date_from: str | None = None,
 ):
-    payload = event_queries.list_events(page, page_size, date_from)
+    payload = await event_queries.list_events(page, page_size, date_from)
     count = payload["count"]
     next_page = None
     if page * page_size < count:
@@ -94,17 +99,17 @@ def list_events(
 
 
 @app.get("/api/events/{event_id}")
-def one_event(event_id: str):
+async def one_event(event_id: str):
     try:
-        return event_queries.get_event(event_id)
+        return await event_queries.get_event(event_id)
     except EventNotFound:
         raise HTTPException(status_code=404, detail="событие не найдено") from None
 
 
 @app.get("/api/events/{event_id}/seats")
-def event_seats(event_id: str):
+async def event_seats(event_id: str):
     try:
-        return seat_service.available_seats(event_id)
+        return await seat_service.available_seats(event_id)
     except EventNotFound:
         raise HTTPException(status_code=404, detail="событие не найдено") from None
     except ProviderRejected:
@@ -114,9 +119,9 @@ def event_seats(event_id: str):
 
 
 @app.post("/api/tickets", status_code=201)
-def create_tickets(ticket: dict):
+async def create_tickets(ticket: dict):
     try:
-        return ticket_service.create(ticket)
+        return await ticket_service.create(ticket)
     except EventNotFound:
         raise HTTPException(status_code=404, detail="событие не найдено") from None
     except RegistrationClosed:
@@ -135,9 +140,9 @@ def create_tickets(ticket: dict):
 
 
 @app.delete("/api/tickets/{ticket_id}")
-def delete_ticket(ticket_id: str):
+async def delete_ticket(ticket_id: str):
     try:
-        return ticket_service.cancel(ticket_id)
+        return await ticket_service.cancel(ticket_id)
     except TicketNotFound:
         raise HTTPException(status_code=404, detail="билет не найден") from None
     except ProviderRejected:

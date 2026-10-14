@@ -1,6 +1,9 @@
-import psycopg2
+from db import get_pool
 
-from db import open_db
+_LIST_COLUMNS = (
+    "id, name, city, status, event_time, place_id, place_name, "
+    "address, registration_deadline, number_of_visitors"
+)
 
 
 def _card(row, with_pattern: bool) -> dict:
@@ -24,119 +27,98 @@ def _card(row, with_pattern: bool) -> dict:
 
 
 class EventRepository:
-    def count(self, date_from: str | None) -> int:
-        conn = open_db()
-        cur = conn.cursor()
-        if date_from:
-            cur.execute(
-                "SELECT COUNT(*) FROM events WHERE event_time >= %s",
-                (date_from,),
-            )
-        else:
-            cur.execute("SELECT COUNT(*) FROM events")
-        count = cur.fetchone()[0]
-        cur.close()
-        conn.close()
-        return count
+    async def count(self, date_from: str | None) -> int:
+        async with get_pool().acquire() as conn:
+            if date_from:
+                value = await conn.fetchval(
+                    "SELECT COUNT(*) FROM events WHERE event_time >= $1",
+                    date_from,
+                )
+            else:
+                value = await conn.fetchval("SELECT COUNT(*) FROM events")
+        return int(value)
 
-    def list_events(self, page: int, page_size: int, date_from: str | None) -> list:
-        conn = open_db()
-        cur = conn.cursor()
+    async def list_events(
+        self, page: int, page_size: int, date_from: str | None
+    ) -> list:
         offset = (page - 1) * page_size
-        columns = (
-            "id, name, city, status, event_time, place_id, place_name, "
-            "address, registration_deadline, number_of_visitors"
-        )
-        if date_from:
-            cur.execute(
-                f"""
-                SELECT {columns}
-                FROM events
-                WHERE event_time >= %s
-                ORDER BY event_time NULLS LAST
-                LIMIT %s OFFSET %s
-                """,
-                (date_from, page_size, offset),
-            )
-        else:
-            cur.execute(
-                f"""
-                SELECT {columns}
-                FROM events
-                ORDER BY event_time NULLS LAST
-                LIMIT %s OFFSET %s
-                """,
-                (page_size, offset),
-            )
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
+        async with get_pool().acquire() as conn:
+            if date_from:
+                rows = await conn.fetch(
+                    f"""
+                    SELECT {_LIST_COLUMNS}
+                    FROM events
+                    WHERE event_time >= $1
+                    ORDER BY event_time NULLS LAST
+                    LIMIT $2 OFFSET $3
+                    """,
+                    date_from,
+                    page_size,
+                    offset,
+                )
+            else:
+                rows = await conn.fetch(
+                    f"""
+                    SELECT {_LIST_COLUMNS}
+                    FROM events
+                    ORDER BY event_time NULLS LAST
+                    LIMIT $1 OFFSET $2
+                    """,
+                    page_size,
+                    offset,
+                )
         return [_card(row, with_pattern=False) for row in rows]
 
-    def get(self, event_id: str) -> dict | None:
-        conn = open_db()
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT id, name, city, status, event_time, place_id, place_name,
-                   address, registration_deadline, number_of_visitors,
-                   seats_pattern
-            FROM events
-            WHERE id = %s
-            """,
-            (event_id,),
-        )
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
+    async def get(self, event_id: str) -> dict | None:
+        async with get_pool().acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, name, city, status, event_time, place_id, place_name,
+                       address, registration_deadline, number_of_visitors,
+                       seats_pattern
+                FROM events
+                WHERE id = $1
+                """,
+                event_id,
+            )
         if row is None:
             return None
         return _card(row, with_pattern=True)
 
-    def status(self, event_id: str) -> str | None:
-        conn = open_db()
-        cur = conn.cursor()
-        cur.execute("SELECT status FROM events WHERE id = %s", (event_id,))
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        if row is None:
-            return None
-        return row[0]
+    async def status(self, event_id: str) -> str | None:
+        async with get_pool().acquire() as conn:
+            return await conn.fetchval(
+                "SELECT status FROM events WHERE id = $1",
+                event_id,
+            )
 
-    def is_empty(self) -> bool:
-        return self.count(None) == 0
+    async def is_empty(self) -> bool:
+        return await self.count(None) == 0
 
-    def changed_at(self) -> str:
-        if self.is_empty():
+    async def changed_at(self) -> str:
+        if await self.is_empty():
             return "2000-01-01"
-        conn = open_db()
-        cur = conn.cursor()
-        cur.execute("SELECT last_changed_at FROM sync_state WHERE id = 1")
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        if row is None or not row[0]:
+        async with get_pool().acquire() as conn:
+            value = await conn.fetchval(
+                "SELECT last_changed_at FROM sync_state WHERE id = 1"
+            )
+        if not value:
             return "2000-01-01"
-        return row[0]
+        return value
 
-    def save_changed_at(self, day: str) -> None:
-        conn = open_db()
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO sync_state (id, last_changed_at)
-            VALUES (1, %s)
-            ON CONFLICT (id) DO UPDATE
-            SET last_changed_at = EXCLUDED.last_changed_at
-            """,
-            (day,),
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
+    async def save_changed_at(self, day: str) -> None:
+        async with get_pool().acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO sync_state (id, last_changed_at)
+                VALUES (1, $1)
+                ON CONFLICT (id) DO UPDATE
+                SET last_changed_at = EXCLUDED.last_changed_at
+                """,
+                day,
+            )
 
-    def upsert(self, event: dict) -> None:
+    async def upsert(self, event: dict) -> None:
         place = event.get("place") or {}
         visitors = event.get("number_of_visitors")
         if visitors is not None:
@@ -144,17 +126,15 @@ class EventRepository:
                 visitors = int(visitors)
             except (TypeError, ValueError):
                 visitors = None
-        conn = open_db()
-        cur = conn.cursor()
-        try:
-            cur.execute(
+        async with get_pool().acquire() as conn:
+            await conn.execute(
                 """
                 INSERT INTO events (
                     id, name, city, status, event_time,
                     place_id, place_name, address,
                     registration_deadline, number_of_visitors, seats_pattern
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 ON CONFLICT (id) DO UPDATE
                 SET name = EXCLUDED.name,
                     city = EXCLUDED.city,
@@ -167,59 +147,39 @@ class EventRepository:
                     number_of_visitors = EXCLUDED.number_of_visitors,
                     seats_pattern = EXCLUDED.seats_pattern
                 """,
-                (
-                    event["id"],
-                    event["name"],
-                    place.get("city"),
-                    event["status"],
-                    event.get("event_time"),
-                    place.get("id"),
-                    place.get("name"),
-                    place.get("address"),
-                    event.get("registration_deadline"),
-                    visitors,
-                    place.get("seats_pattern"),
-                ),
+                event["id"],
+                event["name"],
+                place.get("city"),
+                event["status"],
+                event.get("event_time"),
+                place.get("id"),
+                place.get("name"),
+                place.get("address"),
+                event.get("registration_deadline"),
+                visitors,
+                place.get("seats_pattern"),
             )
-            conn.commit()
-        except psycopg2.Error:
-            conn.rollback()
-            raise
-        finally:
-            cur.close()
-            conn.close()
 
 
 class TicketRepository:
-    def event_id(self, ticket_id: str) -> str | None:
-        conn = open_db()
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT event_id FROM tickets WHERE ticket_id = %s",
-            (ticket_id,),
-        )
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        if row is None:
-            return None
-        return row[0]
+    async def event_id(self, ticket_id: str) -> str | None:
+        async with get_pool().acquire() as conn:
+            return await conn.fetchval(
+                "SELECT event_id FROM tickets WHERE ticket_id = $1",
+                ticket_id,
+            )
 
-    def save(self, ticket_id: str, event_id: str) -> None:
-        conn = open_db()
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO tickets (ticket_id, event_id) VALUES (%s, %s)",
-            (ticket_id, event_id),
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
+    async def save(self, ticket_id: str, event_id: str) -> None:
+        async with get_pool().acquire() as conn:
+            await conn.execute(
+                "INSERT INTO tickets (ticket_id, event_id) VALUES ($1, $2)",
+                ticket_id,
+                event_id,
+            )
 
-    def delete(self, ticket_id: str) -> None:
-        conn = open_db()
-        cur = conn.cursor()
-        cur.execute("DELETE FROM tickets WHERE ticket_id = %s", (ticket_id,))
-        conn.commit()
-        cur.close()
-        conn.close()
+    async def delete(self, ticket_id: str) -> None:
+        async with get_pool().acquire() as conn:
+            await conn.execute(
+                "DELETE FROM tickets WHERE ticket_id = $1",
+                ticket_id,
+            )
